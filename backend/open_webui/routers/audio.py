@@ -1213,6 +1213,116 @@ def transcription(
         )
 
 
+# Store for managing ongoing transcription sessions
+transcription_sessions = {}
+
+
+class TranscriptionChunkForm(BaseModel):
+    session_id: str
+    chunk_data: str  # Base64 encoded audio chunk
+    is_final: bool = False
+    language: Optional[str] = None
+
+
+@router.post("/transcriptions/stream")
+async def transcription_stream(
+    request: Request,
+    form_data: TranscriptionChunkForm,
+    user=Depends(get_verified_user),
+):
+    """
+    Stream audio chunks for progressive transcription.
+    This endpoint allows sending audio in chunks for reduced latency.
+    """
+    session_id = form_data.session_id
+    
+    # Initialize session if it doesn't exist
+    if session_id not in transcription_sessions:
+        transcription_sessions[session_id] = {
+            "chunks": [],
+            "accumulated_audio": bytearray(),
+            "transcripts": [],
+            "metadata": {"language": form_data.language} if form_data.language else {}
+        }
+    
+    session = transcription_sessions[session_id]
+    
+    try:
+        # Decode the base64 audio chunk
+        chunk_bytes = base64.b64decode(form_data.chunk_data)
+        session["chunks"].append(chunk_bytes)
+        session["accumulated_audio"].extend(chunk_bytes)
+        
+        # Process chunk for transcription (only if we have enough data)
+        min_chunk_size = 16000  # Minimum size for meaningful transcription (~0.5 seconds at 32kbps)
+        
+        transcript_text = ""
+        
+        if len(session["accumulated_audio"]) >= min_chunk_size or form_data.is_final:
+            # Save accumulated audio to temp file
+            file_dir = f"{CACHE_DIR}/audio/transcriptions/stream"
+            os.makedirs(file_dir, exist_ok=True)
+            
+            chunk_id = f"{session_id}_chunk_{len(session['transcripts'])}"
+            temp_file = f"{file_dir}/{chunk_id}.webm"
+            
+            with open(temp_file, "wb") as f:
+                f.write(bytes(session["accumulated_audio"]))
+            
+            try:
+                # Transcribe the chunk
+                result = transcribe(request, temp_file, session["metadata"])
+                transcript_text = result.get("text", "")
+                
+                if transcript_text.strip():
+                    session["transcripts"].append(transcript_text)
+                
+                # Clear accumulated audio after successful transcription
+                if not form_data.is_final:
+                    session["accumulated_audio"] = bytearray()
+                
+            except Exception as e:
+                log.exception(f"Error transcribing chunk: {e}")
+                # Don't clear the buffer on error, we'll try again with more data
+            finally:
+                # Clean up temp file
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except Exception:
+                        pass
+        
+        # If this is the final chunk, clean up the session
+        if form_data.is_final:
+            full_transcript = " ".join(session["transcripts"])
+            # Clean up session
+            del transcription_sessions[session_id]
+            
+            return {
+                "text": full_transcript.strip(),
+                "is_final": True,
+                "session_id": session_id
+            }
+        
+        return {
+            "text": transcript_text.strip(),
+            "is_final": False,
+            "session_id": session_id,
+            "partial_transcripts": session["transcripts"]
+        }
+        
+    except Exception as e:
+        log.exception(e)
+        # Clean up session on error
+        if session_id in transcription_sessions:
+            del transcription_sessions[session_id]
+        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(e),
+        )
+
+
 def get_available_models(request: Request) -> list[dict]:
     available_models = []
     if request.app.state.config.TTS_ENGINE == "openai":
