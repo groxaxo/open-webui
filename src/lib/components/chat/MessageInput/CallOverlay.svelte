@@ -6,7 +6,7 @@
 
 	import { blobToFile } from '$lib/utils';
 	import { generateEmoji } from '$lib/apis';
-	import { synthesizeOpenAISpeech, transcribeAudio } from '$lib/apis/audio';
+	import { synthesizeOpenAISpeech, transcribeAudio, transcribeAudioChunk } from '$lib/apis/audio';
 
 	import { toast } from 'svelte-sonner';
 
@@ -42,6 +42,11 @@
 	let mediaRecorder;
 	let audioStream = null;
 	let audioChunks = [];
+	
+	// Chunked transcription state
+	let transcriptionSessionId = null;
+	let accumulatedTranscript = '';
+	let useChunkedTranscription = true; // Feature flag
 
 	let videoInputDevices = [];
 	let selectedVideoInputDeviceId = null;
@@ -171,6 +176,40 @@
 			}
 		}
 	};
+	
+	const transcribeChunkHandler = async (audioBlob, isFinal = false) => {
+		// Convert blob to base64
+		const arrayBuffer = await audioBlob.arrayBuffer();
+		const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+		
+		try {
+			const res = await transcribeAudioChunk(
+				localStorage.token,
+				transcriptionSessionId,
+				base64,
+				isFinal,
+				$settings?.audio?.stt?.language
+			).catch((error) => {
+				console.error('Chunk transcription error:', error);
+				return null;
+			});
+			
+			if (res && res.text) {
+				console.log('Partial transcript:', res.text);
+				accumulatedTranscript = res.text;
+				
+				// If final, submit the complete transcript
+				if (res.is_final && res.text !== '') {
+					const _responses = await submitPrompt(res.text, { _raw: true });
+					console.log(_responses);
+					accumulatedTranscript = '';
+					transcriptionSessionId = null;
+				}
+			}
+		} catch (error) {
+			console.error('Chunk transcription failed:', error);
+		}
+	};
 
 	const stopRecordingCallback = async (_continue = true) => {
 		if ($showCallOverlay) {
@@ -202,7 +241,13 @@
 				}
 
 				const audioBlob = new Blob(_audioChunks, { type: 'audio/wav' });
-				await transcribeHandler(audioBlob);
+				
+				// Use chunked transcription or fallback to original
+				if (useChunkedTranscription && transcriptionSessionId) {
+					await transcribeChunkHandler(audioBlob, true); // Final chunk
+				} else {
+					await transcribeHandler(audioBlob);
+				}
 
 				confirmed = false;
 				loading = false;
@@ -230,16 +275,30 @@
 					}
 				});
 			}
-			mediaRecorder = new MediaRecorder(audioStream);
+			
+			// Initialize new transcription session for chunked mode
+			if (useChunkedTranscription) {
+				transcriptionSessionId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+				accumulatedTranscript = '';
+			}
+			
+			mediaRecorder = new MediaRecorder(audioStream, {
+				mimeType: 'audio/webm'
+			});
 
 			mediaRecorder.onstart = () => {
 				console.log('Recording started');
 				audioChunks = [];
 			};
 
-			mediaRecorder.ondataavailable = (event) => {
+			mediaRecorder.ondataavailable = async (event) => {
 				if (hasStartedSpeaking) {
 					audioChunks.push(event.data);
+					
+					// If using chunked transcription, process chunks as they arrive
+					if (useChunkedTranscription && event.data.size > 0) {
+						await transcribeChunkHandler(event.data, false);
+					}
 				}
 			};
 
@@ -325,7 +384,10 @@
 					// BIG RED TEXT
 					console.log('%c%s', 'color: red; font-size: 20px;', '🔊 Sound detected');
 					if (mediaRecorder && mediaRecorder.state !== 'recording') {
-						mediaRecorder.start();
+						// Start with timeslice for chunked transcription
+						// Request data every 1 second for progressive transcription
+						const timeslice = useChunkedTranscription ? 1000 : undefined;
+						mediaRecorder.start(timeslice);
 					}
 
 					if (!hasStartedSpeaking) {
