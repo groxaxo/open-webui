@@ -4,7 +4,7 @@
 	import { config, settings } from '$lib/stores';
 	import { blobToFile, calculateSHA256, extractCurlyBraceWords } from '$lib/utils';
 
-	import { transcribeAudio } from '$lib/apis/audio';
+	import { transcribeAudio, transcribeAudioChunk } from '$lib/apis/audio';
 	import XMark from '$lib/components/icons/XMark.svelte';
 
 	import dayjs from 'dayjs';
@@ -23,6 +23,9 @@
 
 	export let className = ' p-2.5 w-full max-w-full';
 
+	// Optional chunked transcription support (similar to CallOverlay)
+	export let useChunkedTranscription = false;
+
 	export let onCancel = () => {};
 	export let onConfirm = (data) => {};
 
@@ -33,6 +36,11 @@
 	let durationCounter = null;
 
 	let transcription = '';
+
+	// Chunked transcription state
+	let transcriptionSessionId = null;
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
+	let accumulatedTranscript = ''; // Tracks partial transcripts (future: could display in UI)
 
 	const startDurationCounter = () => {
 		durationCounter = setInterval(() => {
@@ -143,6 +151,39 @@
 		detectSound();
 	};
 
+	const transcribeChunkHandler = async (audioBlob, isFinal = false) => {
+		// Convert blob to base64
+		const arrayBuffer = await audioBlob.arrayBuffer();
+		const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+		
+		try {
+			const res = await transcribeAudioChunk(
+				localStorage.token,
+				transcriptionSessionId,
+				base64,
+				isFinal,
+				$settings?.audio?.stt?.language
+			).catch((error) => {
+				console.error('Chunk transcription error:', error);
+				return null;
+			});
+			
+			if (res && res.text) {
+				console.log('Partial transcript:', res.text);
+				accumulatedTranscript = res.text;
+				
+				// If final, confirm with the complete transcript
+				if (res.is_final && res.text !== '') {
+					onConfirm({ text: res.text });
+					accumulatedTranscript = '';
+					transcriptionSessionId = null;
+				}
+			}
+		} catch (error) {
+			console.error('Chunk transcription failed:', error);
+		}
+	};
+
 	const onStopHandler = async (audioBlob, ext: string = 'wav') => {
 		// Create a blob from the audio chunks
 
@@ -152,6 +193,12 @@
 		if (transcribe) {
 			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
 				// with web stt, we don't need to send the file to the server
+				return;
+			}
+
+			// Use chunked transcription or fallback to original
+			if (useChunkedTranscription && transcriptionSessionId) {
+				await transcribeChunkHandler(audioBlob, true); // Final chunk
 				return;
 			}
 
@@ -178,6 +225,12 @@
 
 	const startRecording = async () => {
 		loading = true;
+
+		// Initialize new transcription session for chunked mode
+		if (useChunkedTranscription && transcribe) {
+			transcriptionSessionId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+			accumulatedTranscript = '';
+		}
 
 		try {
 			if (displayMedia) {
@@ -224,7 +277,16 @@
 			audioChunks = [];
 			analyseAudio(stream);
 		};
-		mediaRecorder.ondataavailable = (event) => audioChunks.push(event.data);
+		mediaRecorder.ondataavailable = async (event) => {
+			audioChunks.push(event.data);
+			
+			// If using chunked transcription, process chunks as they arrive
+			if (useChunkedTranscription && transcribe && event.data.size > 0) {
+				if ($config.audio.stt.engine !== 'web' && ($settings?.audio?.stt?.engine ?? '') !== 'web') {
+					await transcribeChunkHandler(event.data, false);
+				}
+			}
+		};
 		mediaRecorder.onstop = async () => {
 			console.log('Recording stopped');
 
@@ -252,7 +314,10 @@
 		};
 
 		try {
-			mediaRecorder.start();
+			// Start with timeslice for chunked transcription
+			// Request data every 1 second for progressive transcription
+			const timeslice = useChunkedTranscription && transcribe ? 1000 : undefined;
+			mediaRecorder.start(timeslice);
 		} catch (error) {
 			console.error('Error starting recording:', error);
 			toast.error($i18n.t('Error starting recording.'));
@@ -336,6 +401,10 @@
 		stopDurationCounter();
 		audioChunks = [];
 		visualizerData = Array(VISUALIZER_BUFFER_LENGTH).fill(0);
+
+		// Clean up chunked transcription session
+		transcriptionSessionId = null;
+		accumulatedTranscript = '';
 
 		if (stream) {
 			const tracks = stream.getTracks();
