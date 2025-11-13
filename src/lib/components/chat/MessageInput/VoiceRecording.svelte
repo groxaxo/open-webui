@@ -336,7 +336,8 @@
 					speechRecognition.continuous = true;
 
 					// Set the timeout for turning off the recognition after inactivity (in milliseconds)
-					const inactivityTimeout = 2000; // 3 seconds
+					// Reduced from 2000ms to 800ms for faster response
+					const inactivityTimeout = 800;
 
 					let timeoutId;
 					// Start recognition

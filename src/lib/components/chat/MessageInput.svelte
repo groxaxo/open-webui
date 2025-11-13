@@ -769,6 +769,13 @@
 			console.log('Escape');
 			dragged = false;
 		}
+
+		// F1 key to toggle voice call mode
+		if (e.key === 'F1') {
+			e.preventDefault();
+			console.log('F1 pressed - toggling voice call mode');
+			showCallOverlay.set(!$showCallOverlay);
+		}
 	};
 
 	const onKeyUp = (e) => {
