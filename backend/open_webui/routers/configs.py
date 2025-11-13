@@ -1,8 +1,12 @@
 import logging
 import copy
+import time
+import json
 from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 import aiohttp
+import io
 
 from typing import Optional
 
@@ -28,6 +32,11 @@ from open_webui.utils.oauth import (
     OAuthClientInformationFull,
 )
 from mcp.shared.auth import OAuthMetadata
+
+from open_webui.models.models import Models
+from open_webui.models.tools import Tools
+from open_webui.models.functions import Functions
+from open_webui.models.prompts import Prompts
 
 router = APIRouter()
 
@@ -508,3 +517,190 @@ async def get_banners(
     user=Depends(get_verified_user),
 ):
     return request.app.state.config.BANNERS
+
+
+############################
+# Export All Settings
+############################
+
+
+@router.get("/export/all")
+async def export_all_settings(user=Depends(get_admin_user)):
+    """
+    Export all custom LLM configurations, tools, functions, pipelines, and system prompts.
+    Returns a JSON file containing all settings for backup or migration.
+    """
+    try:
+        # Gather all settings data
+        export_data = {
+            "version": "1.0",
+            "exported_at": int(time.time()),
+            "models": [model.model_dump() for model in Models.get_models()],
+            "tools": [tool.model_dump() for tool in Tools.get_tools()],
+            "functions": [func.model_dump() for func in Functions.get_functions()],
+            "prompts": [prompt.model_dump() for prompt in Prompts.get_prompts()],
+            "config": get_config(),
+        }
+        
+        # Create JSON string
+        json_str = json.dumps(export_data, indent=2)
+        
+        # Return as downloadable file
+        filename = f"openwebui-settings-export-{int(time.time())}.json"
+        return StreamingResponse(
+            io.BytesIO(json_str.encode()),
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        log.exception(f"Error exporting settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+############################
+# Import All Settings
+############################
+
+
+class ImportAllSettingsForm(BaseModel):
+    data: dict
+    merge: bool = True  # If True, merge with existing; if False, replace
+    backup_before_import: bool = True
+
+
+@router.post("/import/all")
+async def import_all_settings(
+    form_data: ImportAllSettingsForm,
+    user=Depends(get_admin_user)
+):
+    """
+    Import all settings from a previously exported file.
+    Supports merge or replace mode with optional backup.
+    """
+    try:
+        import_data = form_data.data
+        
+        # Validate version
+        if "version" not in import_data:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid import file: missing version field"
+            )
+        
+        # Create backup if requested
+        backup_data = None
+        if form_data.backup_before_import:
+            backup_data = {
+                "version": "1.0",
+                "backed_up_at": int(time.time()),
+                "models": [model.model_dump() for model in Models.get_models()],
+                "tools": [tool.model_dump() for tool in Tools.get_tools()],
+                "functions": [func.model_dump() for func in Functions.get_functions()],
+                "prompts": [prompt.model_dump() for prompt in Prompts.get_prompts()],
+                "config": get_config(),
+            }
+        
+        results = {
+            "models_imported": 0,
+            "tools_imported": 0,
+            "functions_imported": 0,
+            "prompts_imported": 0,
+            "errors": []
+        }
+        
+        # Import models
+        if "models" in import_data:
+            from open_webui.models.models import ModelForm
+            for model_data in import_data["models"]:
+                try:
+                    model_id = model_data.get("id")
+                    existing_model = Models.get_model_by_id(model_id)
+                    
+                    if existing_model and not form_data.merge:
+                        continue  # Skip if in replace mode and already exists
+                    
+                    model_form = ModelForm(**model_data)
+                    if existing_model:
+                        Models.update_model_by_id(model_id, model_form)
+                    else:
+                        Models.insert_new_model(model_form, user.id)
+                    results["models_imported"] += 1
+                except Exception as e:
+                    results["errors"].append(f"Model {model_data.get('id', 'unknown')}: {str(e)}")
+        
+        # Import tools
+        if "tools" in import_data:
+            from open_webui.models.tools import ToolForm
+            for tool_data in import_data["tools"]:
+                try:
+                    tool_id = tool_data.get("id")
+                    existing_tool = Tools.get_tool_by_id(tool_id)
+                    
+                    if existing_tool and not form_data.merge:
+                        continue
+                    
+                    tool_form = ToolForm(**tool_data)
+                    if existing_tool:
+                        Tools.update_tool_by_id(tool_id, tool_form)
+                    else:
+                        Tools.insert_new_tool(user.id, tool_form)
+                    results["tools_imported"] += 1
+                except Exception as e:
+                    results["errors"].append(f"Tool {tool_data.get('id', 'unknown')}: {str(e)}")
+        
+        # Import functions
+        if "functions" in import_data:
+            from open_webui.models.functions import FunctionForm
+            for func_data in import_data["functions"]:
+                try:
+                    func_id = func_data.get("id")
+                    existing_func = Functions.get_function_by_id(func_id)
+                    
+                    if existing_func and not form_data.merge:
+                        continue
+                    
+                    func_form = FunctionForm(**func_data)
+                    if existing_func:
+                        Functions.update_function_by_id(func_id, func_form)
+                    else:
+                        Functions.insert_new_function(user.id, func_form)
+                    results["functions_imported"] += 1
+                except Exception as e:
+                    results["errors"].append(f"Function {func_data.get('id', 'unknown')}: {str(e)}")
+        
+        # Import prompts
+        if "prompts" in import_data:
+            from open_webui.models.prompts import PromptForm
+            for prompt_data in import_data["prompts"]:
+                try:
+                    prompt_command = prompt_data.get("command")
+                    existing_prompt = Prompts.get_prompt_by_command(prompt_command)
+                    
+                    if existing_prompt and not form_data.merge:
+                        continue
+                    
+                    prompt_form = PromptForm(**prompt_data)
+                    if existing_prompt:
+                        Prompts.update_prompt_by_command(prompt_command, prompt_form)
+                    else:
+                        Prompts.insert_new_prompt(user.id, prompt_form)
+                    results["prompts_imported"] += 1
+                except Exception as e:
+                    results["errors"].append(f"Prompt {prompt_data.get('command', 'unknown')}: {str(e)}")
+        
+        # Import config
+        if "config" in import_data and form_data.merge:
+            try:
+                save_config(import_data["config"])
+            except Exception as e:
+                results["errors"].append(f"Config import error: {str(e)}")
+        
+        return {
+            "success": True,
+            "results": results,
+            "backup": backup_data if form_data.backup_before_import else None
+        }
+        
+    except Exception as e:
+        log.exception(f"Error importing settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
