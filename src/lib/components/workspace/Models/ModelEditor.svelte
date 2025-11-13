@@ -513,7 +513,7 @@
 						<div class="my-1">
 							<div class=" text-sm font-semibold mb-1">{$i18n.t('Base Model (From)')}</div>
 
-							<div>
+							<div class="space-y-1">
 								<select
 									class="text-sm w-full bg-transparent outline-hidden"
 									placeholder={$i18n.t('Select a base model (e.g. llama3, gpt-4o)')}
@@ -527,9 +527,17 @@
 										>{$i18n.t('Select a base model')}</option
 									>
 									{#each $models.filter((m) => (model ? m.id !== model.id : true) && !m?.preset && m?.owned_by !== 'arena' && !(m?.direct ?? false)) as model}
-										<option value={model.id} class=" text-gray-900">{model.name}</option>
+										<option value={model.id} class=" text-gray-900">
+											{model.name}
+											{#if !model.base_model_id}
+												• Base Model
+											{/if}
+										</option>
 									{/each}
 								</select>
+								<p class="text-xs text-gray-500 dark:text-gray-400">
+									{$i18n.t('Select the base LLM to customize. Original base model will remain available.')}
+								</p>
 							</div>
 						</div>
 					{/if}

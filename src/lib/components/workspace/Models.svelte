@@ -448,14 +448,25 @@
 								<div class="flex h-full w-full flex-1 flex-col justify-start self-center group">
 									<div class="flex-1 w-full">
 										<div class="flex items-center justify-between w-full">
-											<Tooltip content={model.name} className=" w-fit" placement="top-start">
-												<a
-													class=" font-semibold line-clamp-1 hover:underline capitalize"
-													href={`/?models=${encodeURIComponent(model.id)}`}
-												>
-													{model.name}
-												</a>
-											</Tooltip>
+											<div class="flex items-center gap-2">
+												<Tooltip content={model.name} className=" w-fit" placement="top-start">
+													<a
+														class=" font-semibold line-clamp-1 hover:underline capitalize"
+														href={`/?models=${encodeURIComponent(model.id)}`}
+													>
+														{model.name}
+													</a>
+												</Tooltip>
+												{#if model.base_model_id}
+													<span class="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 rounded">
+														Custom
+													</span>
+												{:else}
+													<span class="text-xs px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded">
+														Base
+													</span>
+												{/if}
+											</div>
 
 											<div class=" flex items-center gap-1">
 												<div
@@ -579,6 +590,14 @@
 											</Tooltip>
 
 											<div>·</div>
+
+											{#if model.base_model_id}
+												<div class="shrink-0 text-gray-500 text-xs">
+													<span class="font-medium">{$i18n.t('Based on:')} </span>
+													<span class="text-gray-600 dark:text-gray-400">{model.base_model_id}</span>
+												</div>
+												<div>·</div>
+											{/if}
 
 											<Tooltip
 												content={marked.parse(model?.meta?.description ?? model.id)}
