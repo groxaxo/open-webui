@@ -149,7 +149,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
     custom_models = Models.get_all_models()
     for custom_model in custom_models:
         if custom_model.base_model_id is None:
-            # Applied directly to a base model
+            # Applied directly to a base model - overlay customizations but preserve original
             for model in models:
                 if custom_model.id == model["id"] or (
                     model.get("owned_by") == "ollama"
@@ -181,8 +181,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
                         model["action_ids"] = action_ids
                         model["filter_ids"] = filter_ids
-                    else:
-                        models.remove(model)
+                    # Note: Inactive customizations are ignored but base model is preserved
 
         elif custom_model.is_active and (
             custom_model.id not in [model["id"] for model in models]
