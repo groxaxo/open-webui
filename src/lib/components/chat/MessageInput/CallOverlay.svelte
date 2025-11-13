@@ -7,6 +7,7 @@
 	import { blobToFile } from '$lib/utils';
 	import { generateEmoji } from '$lib/apis';
 	import { synthesizeOpenAISpeech, transcribeAudio, transcribeAudioChunk } from '$lib/apis/audio';
+	import { createVAD, audioToBlob, type VADCallbacks } from '$lib/utils/vad';
 
 	import { toast } from 'svelte-sonner';
 
@@ -47,6 +48,12 @@
 	let transcriptionSessionId = null;
 	let accumulatedTranscript = '';
 	let useChunkedTranscription = true; // Feature flag
+	
+	// VAD (Voice Activity Detection) state
+	// Can be enabled by setting localStorage.useSileroVAD = 'true' or via settings
+	let useSileroVAD = false;
+	let vadInstance = null;
+	let vadAudioBuffer = [];
 
 	let videoInputDevices = [];
 	let selectedVideoInputDeviceId = null;
@@ -311,7 +318,79 @@
 				stopRecordingCallback();
 			};
 
+			// Use Silero VAD if enabled, otherwise use traditional audio analysis
+			if (useSileroVAD) {
+				await initializeVAD();
+			} else {
+				analyseAudio(audioStream);
+			}
+		}
+	};
+
+	const initializeVAD = async () => {
+		try {
+			const callbacks: VADCallbacks = {
+				onSpeechStart: () => {
+					console.log('%c%s', 'color: green; font-size: 20px;', '🎤 VAD: Speech detected');
+					if (mediaRecorder && mediaRecorder.state !== 'recording') {
+						const timeslice = useChunkedTranscription ? 1000 : undefined;
+						mediaRecorder.start(timeslice);
+					}
+					
+					if (!hasStartedSpeaking) {
+						hasStartedSpeaking = true;
+						stopAllAudio();
+					}
+					
+					vadAudioBuffer = [];
+				},
+				onSpeechEnd: async (audio: Float32Array) => {
+					console.log('%c%s', 'color: red; font-size: 20px;', '🔇 VAD: Speech ended');
+					confirmed = true;
+					
+					// Store VAD audio buffer for transcription
+					vadAudioBuffer.push(audio);
+					
+					if (mediaRecorder && mediaRecorder.state === 'recording') {
+						mediaRecorder.stop();
+					}
+				},
+				onVADMisfire: () => {
+					console.log('VAD: Misfire - false positive speech detection');
+				}
+			};
+
+			vadInstance = await createVAD(
+				{
+					positiveSpeechThreshold: 0.5,
+					negativeSpeechThreshold: 0.35,
+					redemptionMs: 800, // Wait 800ms after silence
+					minSpeechMs: 500, // Minimum 500ms of speech
+					preSpeechPadMs: 300 // Include 300ms before speech
+				},
+				callbacks
+			);
+
+			await vadInstance.start();
+			console.log('Silero VAD initialized and started');
+		} catch (error) {
+			console.error('Failed to initialize VAD, falling back to traditional method:', error);
+			toast.error('Failed to initialize advanced voice detection, using basic mode');
+			useSileroVAD = false;
 			analyseAudio(audioStream);
+		}
+	};
+
+	const stopVAD = async () => {
+		if (vadInstance) {
+			try {
+				await vadInstance.pause();
+				vadInstance.destroy();
+				vadInstance = null;
+				console.log('VAD stopped and destroyed');
+			} catch (error) {
+				console.error('Error stopping VAD:', error);
+			}
 		}
 	};
 
@@ -322,6 +401,11 @@
 			}
 		} catch (error) {
 			console.log('Error stopping audio stream:', error);
+		}
+
+		// Stop VAD if it's running
+		if (useSileroVAD) {
+			await stopVAD();
 		}
 
 		if (!audioStream) return;
@@ -772,6 +856,18 @@
 
 		model = $models.find((m) => m.id === modelId);
 
+		// Check if Silero VAD should be enabled
+		// Can be enabled via localStorage or settings
+		try {
+			useSileroVAD = localStorage.getItem('useSileroVAD') === 'true' || 
+						   $settings?.audio?.vad?.useSilero === true;
+			if (useSileroVAD) {
+				console.log('Silero VAD enabled');
+			}
+		} catch (e) {
+			console.log('Error checking VAD settings:', e);
+		}
+
 		startRecording();
 
 		eventTarget.addEventListener('chat:start', chatStartHandler);
@@ -803,6 +899,19 @@
 		await stopCamera();
 
 		await stopAudioStream();
+		
+		// Clean up VAD
+		if (useSileroVAD) {
+			await stopVAD();
+		}
+		
+		// Clean up ambient audio
+		if (ambientAudioContext) {
+			stopAmbientAudio();
+			ambientAudioContext.close();
+			ambientAudioContext = null;
+		}
+		
 		eventTarget.removeEventListener('chat:start', chatStartHandler);
 		eventTarget.removeEventListener('chat', chatEventHandler);
 		eventTarget.removeEventListener('chat:finish', chatFinishHandler);
