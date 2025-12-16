@@ -44,6 +44,12 @@
 	let audioStream = null;
 	let audioChunks = [];
 
+	// WebSocket streaming variables
+	let streamingSocket = null;
+	let streamingAudioContext = null;
+	let streamingAudioWorklet = null;
+	let isStreamingMode = false;
+
 	let videoInputDevices = [];
 	let selectedVideoInputDeviceId = null;
 
@@ -219,6 +225,166 @@
 			audioStream = null;
 		}
 	};
+
+	// ============= WebSocket Streaming Functions =============
+	
+	const startStreamingMode = async () => {
+		if (isStreamingMode) return;
+		
+		try {
+			// Initialize AudioContext immediately (for iOS compatibility)
+			streamingAudioContext = new AudioContext();
+			
+			if (streamingAudioContext.state === 'suspended') {
+				await streamingAudioContext.resume();
+			}
+			
+			// Load the audio processor worklet
+			await streamingAudioContext.audioWorklet.addModule('/static/audio-processor.js');
+			
+			// Connect WebSocket
+			await connectStreamingWebSocket();
+			
+			isStreamingMode = true;
+		} catch (error) {
+			console.error('Error starting streaming mode:', error);
+			toast.error('Failed to start streaming mode');
+			await stopStreamingMode();
+		}
+	};
+
+	const connectStreamingWebSocket = () => {
+		return new Promise((resolve, reject) => {
+			// Dynamic scheme selection (ws:// or wss://)
+			const wsScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+			const wsUrl = `${wsScheme}://${window.location.host}/api/v1/audio/stream/transcriptions`;
+			
+			streamingSocket = new WebSocket(wsUrl);
+			streamingSocket.binaryType = 'arraybuffer';
+
+			streamingSocket.onopen = () => {
+				console.log('WebSocket connected');
+				// Send handshake
+				streamingSocket.send(JSON.stringify({ type: 'start', sample_rate: 16000 }));
+			};
+
+			streamingSocket.onmessage = (event) => {
+				try {
+					const msg = JSON.parse(event.data);
+					console.log('WebSocket message:', msg);
+					
+					if (msg.type === 'ready') {
+						console.log('Server ready, starting audio streaming');
+						startAudioStreaming();
+						resolve();
+					} else if (msg.type === 'speech_start') {
+						console.log('Speech detected');
+					} else if (msg.type === 'processing') {
+						console.log('Processing segment:', msg.segment_id);
+					} else if (msg.type === 'final') {
+						console.log('Transcription result:', msg.text);
+						handleStreamingTranscription(msg.text);
+					} else if (msg.type === 'error') {
+						console.error('Server error:', msg.message);
+						toast.error(msg.message);
+					}
+				} catch (error) {
+					console.error('Error parsing WebSocket message:', error);
+				}
+			};
+
+			streamingSocket.onerror = (error) => {
+				console.error('WebSocket error:', error);
+				reject(error);
+			};
+
+			streamingSocket.onclose = () => {
+				console.log('WebSocket closed');
+				isStreamingMode = false;
+			};
+		});
+	};
+
+	const startAudioStreaming = async () => {
+		if (!streamingAudioContext || !streamingSocket) return;
+		
+		try {
+			// Get microphone stream
+			const micStream = await navigator.mediaDevices.getUserMedia({
+				audio: {
+					echoCancellation: true,
+					noiseSuppression: true,
+					autoGainControl: true,
+					channelCount: 1
+				}
+			});
+
+			const src = streamingAudioContext.createMediaStreamSource(micStream);
+			streamingAudioWorklet = new AudioWorkletNode(streamingAudioContext, 'voice-processor');
+
+			streamingAudioWorklet.port.onmessage = (e) => {
+				// Receive audio frames from worklet and send via WebSocket
+				if (streamingSocket?.readyState === WebSocket.OPEN) {
+					streamingSocket.send(e.data);
+				}
+			};
+
+			// Create a silent output to keep the audio graph alive
+			const zero = streamingAudioContext.createGain();
+			zero.gain.value = 0;
+			src.connect(streamingAudioWorklet);
+			streamingAudioWorklet.connect(zero);
+			zero.connect(streamingAudioContext.destination);
+			
+			console.log('Audio streaming started');
+		} catch (error) {
+			console.error('Error starting audio streaming:', error);
+			toast.error('Failed to access microphone');
+		}
+	};
+
+	const handleStreamingTranscription = async (text) => {
+		if (text && text.trim() !== '') {
+			console.log('Submitting transcription:', text);
+			await submitPrompt(text, { _raw: true });
+		}
+	};
+
+	const stopStreamingMode = async () => {
+		if (!isStreamingMode) return;
+		
+		try {
+			// Send stop message
+			if (streamingSocket && streamingSocket.readyState === WebSocket.OPEN) {
+				streamingSocket.send(JSON.stringify({ type: 'stop' }));
+			}
+			
+			// Close WebSocket
+			if (streamingSocket) {
+				streamingSocket.close();
+				streamingSocket = null;
+			}
+			
+			// Stop audio worklet
+			if (streamingAudioWorklet) {
+				streamingAudioWorklet.disconnect();
+				streamingAudioWorklet = null;
+			}
+			
+			// Close audio context
+			if (streamingAudioContext) {
+				await streamingAudioContext.close();
+				streamingAudioContext = null;
+			}
+			
+			isStreamingMode = false;
+			console.log('Streaming mode stopped');
+		} catch (error) {
+			console.error('Error stopping streaming mode:', error);
+		}
+	};
+	
+	// ============= End WebSocket Streaming Functions =============
 
 	const startRecording = async () => {
 		if ($showCallOverlay) {
