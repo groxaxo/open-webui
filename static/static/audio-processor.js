@@ -10,13 +10,14 @@
 
 const TARGET_SR = 16000;
 const FRAME_SAMPLES = 320; // 20ms @ 16kHz
+const RING_BUFFER_SIZE_BITS = 16; // 2^16 = 64k samples
 
 class VoiceProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
 
     // Input ring buffer (64k samples = 4 seconds @ 48kHz)
-    this._RING_LEN = 1 << 16;     
+    this._RING_LEN = 1 << RING_BUFFER_SIZE_BITS;     
     this._MASK = this._RING_LEN - 1;
     this._ring = new Float32Array(this._RING_LEN);
     this._wAbs = 0;               // total written samples (absolute)

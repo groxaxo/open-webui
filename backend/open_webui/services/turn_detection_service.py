@@ -10,6 +10,9 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+# Constants matching audio_stream.py
+FRAME_SAMPLES = 320  # 20ms @ 16kHz
+
 
 class TurnDetectionService:
     """
@@ -38,16 +41,15 @@ class TurnDetectionService:
             rms = np.sqrt(np.mean(audio_float32**2))
             
             # Calculate how many frames are below energy threshold
-            frame_size = 320  # 20ms @ 16kHz
-            num_frames = len(audio_float32) // frame_size
+            num_frames = len(audio_float32) // FRAME_SAMPLES
             
             if num_frames == 0:
                 return {"is_turn_point": False}
             
             silence_frames = 0
             for i in range(num_frames):
-                start = i * frame_size
-                end = start + frame_size
+                start = i * FRAME_SAMPLES
+                end = start + FRAME_SAMPLES
                 frame = audio_float32[start:end]
                 frame_energy = np.sqrt(np.mean(frame**2))
                 

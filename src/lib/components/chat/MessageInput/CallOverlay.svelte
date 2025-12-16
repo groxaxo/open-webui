@@ -333,12 +333,9 @@
 				}
 			};
 
-			// Create a silent output to keep the audio graph alive
-			const zero = streamingAudioContext.createGain();
-			zero.gain.value = 0;
+			// Connect audio graph (worklet processes but doesn't output to speakers)
 			src.connect(streamingAudioWorklet);
-			streamingAudioWorklet.connect(zero);
-			zero.connect(streamingAudioContext.destination);
+			streamingAudioWorklet.connect(streamingAudioContext.destination);
 			
 			console.log('Audio streaming started');
 		} catch (error) {
