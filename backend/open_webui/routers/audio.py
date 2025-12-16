@@ -1187,8 +1187,8 @@ async def transcribe_bytes_wrapper(app_state, wav_bytes: bytes, user):
         # Clean up temp file
         try:
             os.remove(tmp_path)
-        except:
-            pass
+        except OSError as e:
+            log.warning(f"Failed to remove temp file {tmp_path}: {e}")
 
 
 @router.post("/transcriptions")

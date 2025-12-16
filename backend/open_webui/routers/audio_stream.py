@@ -188,7 +188,8 @@ class AudioStreamSession:
             try:
                 wav_data = pcm16_to_wav(audio_snapshot)
                 
-                # Import the wrapper function here to avoid circular imports
+                # Import here to avoid circular dependency between audio_stream and audio routers
+                # This is safe because the import only happens during request handling, not at module load time
                 from open_webui.routers.audio import transcribe_bytes_wrapper
                 
                 text = await transcribe_bytes_wrapper(
@@ -236,7 +237,17 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     # Use scope to get app state reliably
-    app_state = websocket.scope.get("app").state
+    try:
+        app_state = websocket.scope["app"].state
+    except (KeyError, AttributeError) as e:
+        log.error(f"Failed to access app state: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "message": "Server configuration error"
+        })
+        await websocket.close(code=1011)
+        return
+    
     session = AudioStreamSession(websocket, StartConfig(), app_state)
     await session.start()
 

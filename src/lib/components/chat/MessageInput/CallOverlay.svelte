@@ -324,8 +324,12 @@
 
 			streamingAudioWorklet.port.onmessage = (e) => {
 				// Receive audio frames from worklet and send via WebSocket
-				if (streamingSocket?.readyState === WebSocket.OPEN) {
-					streamingSocket.send(e.data);
+				try {
+					if (streamingSocket?.readyState === WebSocket.OPEN) {
+						streamingSocket.send(e.data);
+					}
+				} catch (error) {
+					console.error('Error sending audio data:', error);
 				}
 			};
 
