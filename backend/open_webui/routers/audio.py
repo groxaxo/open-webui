@@ -1144,6 +1144,53 @@ def split_audio(file_path, max_bytes, format="mp3", bitrate="32k"):
     return chunks
 
 
+async def transcribe_bytes_wrapper(app_state, wav_bytes: bytes, user):
+    """
+    Unified entry point for STT from raw WAV bytes.
+    Used by the audio streaming endpoint.
+    
+    Args:
+        app_state: FastAPI app state with config
+        wav_bytes: Valid WAV file bytes
+        user: User object (can be None for streaming)
+        
+    Returns:
+        Transcribed text string
+    """
+    import tempfile
+    import os
+    import asyncio
+    from functools import partial
+    
+    # Create temp file because existing transcription_handler expects a file path
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(wav_bytes)
+        tmp_path = f.name
+        
+    try:
+        # Create a minimal request-like object with app state
+        class FakeRequest:
+            def __init__(self, state):
+                self.app = type('obj', (object,), {'state': state})
+        
+        fake_request = FakeRequest(app_state)
+        
+        # Call transcription_handler in thread pool since it uses blocking I/O
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            partial(transcription_handler, fake_request, tmp_path, None, user)
+        )
+        
+        return result.get('text', '') if result else ''
+    finally:
+        # Clean up temp file
+        try:
+            os.remove(tmp_path)
+        except OSError as e:
+            log.warning(f"Failed to remove temp file {tmp_path}: {e}")
+
+
 @router.post("/transcriptions")
 def transcription(
     request: Request,

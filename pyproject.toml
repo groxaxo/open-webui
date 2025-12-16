@@ -65,6 +65,10 @@ dependencies = [
     "accelerate",
     "pyarrow==20.0.0",
     "einops==0.8.1",
+    
+    "numpy>=1.24.0",
+    "torch>=2.0.0",
+    "webrtcvad>=2.0.10",
 
     "ftfy==6.3.1",
     "chardet==5.2.0",
